@@ -1,3 +1,4 @@
+#libraries
 import streamlit as st 
 import pandas as pd
 import numpy as np
@@ -9,21 +10,24 @@ from pymongo import MongoClient
 import networkx as nx
 from colors import *
 
+#mongodb connection
 client = MongoClient(st.secrets['url_con'])
 db = client.football_data
 col_matches = db.matches_graph
 
+#some constants
 LEAGUE_ID = st.secrets['league_id']
 IMAGE_LEAGUE = st.secrets['image_league']
 BINS = 5
 
-
+#function to get the data of the selected match
 @st.cache_data(show_spinner=False)
 def get_match(home: str, away: str) -> dict:
     match = col_matches.find_one({'league_id': LEAGUE_ID, 'home': home, 'away': away})
 
     return match
 
+#function to plot a static passing network
 def create_plot_field(graph: nx.DiGraph, pos: dict, coach: str, color: str, venue: str) -> plt.figure:
 
     if venue == 'home':
@@ -53,6 +57,7 @@ def create_plot_field(graph: nx.DiGraph, pos: dict, coach: str, color: str, venu
 
     return fig
 
+#function to plot the average positions(defensive and offensive)
 def create_average_pos_plot(df: pd.DataFrame) -> plt.figure:
     df_pos_ata = df[df['x'] >= 60]
     df_pos_def = df[df['x'] < 60] 
@@ -71,7 +76,7 @@ def create_average_pos_plot(df: pd.DataFrame) -> plt.figure:
     
     return fig
 
-
+#function to create histogram to analyze the centrality measures
 def create_histogram(graph: nx.DiGraph, measure: str, color: str, bins: int) -> plt.figure:    
     if measure == 'betweenness centrality':
         func = nx.betweenness_centrality(graph)
@@ -105,18 +110,70 @@ def create_histogram(graph: nx.DiGraph, measure: str, color: str, bins: int) -> 
         ax.set_facecolor(background)
 
     return fig
+
+#function to plot passing network with substitutions
+@st.fragment
+def plot_players_pos(home_graph: nx.DiGraph, away_graph: nx.DiGraph, home: list, away: list, pos_h: dict, pos_a: dict) -> None:
+    all_players_home = [k['player'] for k in home]
+    first_eleven_home = [k['player'] for k in home if k['titular'] == True]
+
+    all_players_away = [k['player'] for k in away]
+    first_eleven_away = [k['player'] for k in away if k['titular'] == True]    
+
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        options_home = st.multiselect(label="Home Players", options=all_players_home, default=first_eleven_home, max_selections=11)
+    with col_b:
+        options_away = st.multiselect(label="Away Players", options=all_players_away, default=first_eleven_away, max_selections=11)
+
+    H = nx.subgraph(home_graph, options_home)
+    A = nx.subgraph(away_graph, options_away)
+
+    min_passes = 6
+    width = 15
+    proportion = 80 / 120
+    font_size = 6.5
+
+    weights_home= nx.get_edge_attributes(H, 'passes').values()
+    edges_home = [e for e, w in zip(H.edges(), weights_home) if w >= min_passes]
+
+    weights_away= nx.get_edge_attributes(A, 'passes').values()
+    edges_away = [e for e, w in zip(A.edges(), weights_away) if w >= min_passes]
+
+    pos_home = {str(p['player']).strip(): (p['x'], p['y']) for p in pos_h if p['player'] in options_home}
+    pos_away = {str(p['player']).strip(): (((p['x'] - 120 ) * -1), ((p['y']) - 80) * -1) for p in pos_a if p['player'] in options_away}
+
     
 
+    fig, ax = plt.subplots(figsize=(width, width * proportion))
+    pitch = Pitch(pitch_type='statsbomb', line_color=lines)
+    pitch.draw(ax=ax, constrained_layout=True)
 
+    nx.draw_networkx_nodes(H, ax=ax, node_color=color_home, node_size=200, pos=pos_home)
+    nx.draw_networkx_labels(H, ax=ax, pos=pos_home, font_weight='bold', font_size=font_size)
+    nx.draw_networkx_edges(H, pos=pos_home, edgelist=edges_home, edge_color=lines)
 
+    nx.draw_networkx_nodes(A, ax=ax, node_color=color_away, node_size=200, pos=pos_away)
+    nx.draw_networkx_labels(A, ax=ax, pos=pos_away, font_weight='bold', font_size=font_size)
+    nx.draw_networkx_edges(A, pos=pos_away, edgelist=edges_away, edge_color=color_away)
+
+    fig.patch.set_facecolor(background)
+    ax.set_facecolor(background)
+
+    st.pyplot(fig)
+
+#get the list of teams names
 home_teams = list(col_matches.find({'league_id': LEAGUE_ID}).distinct('home'))
 away_teams = list(col_matches.find({'league_id': LEAGUE_ID}).distinct('away'))
 
+#streamlit page configuration
 st.set_page_config(
     page_title="Matches Graphs", 
     layout='wide'
 )
 
+#create a sidebar
 with st.sidebar:
     st.image('static/image.jpeg', 
              caption="Saulo Faria - Data Scientist Specialized in Football")
@@ -132,10 +189,11 @@ with st.sidebar:
 col_header, col_image = st.columns([7, 2], vertical_alignment='center')
 
 with col_header:
-    st.header("Brazilian Serie A Matches Graphs and its Centrality Measures")
+    st.header("Brazilian Serie A 2025 Matches Graphs and its Centrality Measures")
 with col_image:
     st.image(IMAGE_LEAGUE, width=100)
 
+#form to select the teams
 with st.form('my-form'):
     if 'home' not in st.session_state:
         st.session_state['home'] = 'Flamengo'
@@ -161,13 +219,25 @@ with st.form('my-form'):
             match = get_match(st.session_state['home'], st.session_state['away'])
 
             home_graph = nx.node_link_graph(match['home_graph'], edges="links")
+            st.session_state['home_graph'] = home_graph
+
             away_graph = nx.node_link_graph(match['away_graph'], edges="links")
+            st.session_state['away_graph'] = away_graph
+
             pos_h = match['home_pos']
-            pos_a = match['away_pos']        
+            st.session_state['pos_h'] = pos_h
+
+            pos_a = match['away_pos']
+            st.session_state['pos_a'] = pos_a
+
             coach_home = match['coach_home']
             coach_away = match['coach_away']
             df_pos_h = pd.DataFrame(pos_h)
             df_pos_a = pd.DataFrame(pos_a)
+            lineup_home = match['lineup_home']
+            lineup_away = match['lineup_away']
+            st.session_state['lineup_home'] = lineup_home
+            st.session_state['lineup_away'] = lineup_away
 
             pitch = Pitch(pitch_type='statsbomb', line_color=lines)
             vpitch = VerticalPitch(pitch_type='statsbomb', line_color=lines)
@@ -216,14 +286,21 @@ with st.form('my-form'):
                     st.pyplot(create_histogram(graph=away_graph, measure='eigenvector centrality', color=color_away, bins=BINS))
 
                 with col14:
-                    st.pyplot(create_histogram(graph=away_graph, measure='pagerank', color=color_away, bins=BINS))
+                    st.pyplot(create_histogram(graph=away_graph, measure='pagerank', color=color_away, bins=BINS))          
+
+
         except Exception as e:
             st.write("Ops! Something Wrong Has Happened! Maybe This Match Didn't Occurred Yet")
 
-        
+st.divider()
 
+try:
+    st.subheader("Make Substitutions to Observe how the Dynamic of the Match Has Changed")
+    st.write("Only connections with 5 or more passes is shown")
+    plot_players_pos(home_graph=st.session_state['home_graph'], away_graph=st.session_state['away_graph'], 
+                     home=st.session_state['lineup_home'], away=st.session_state['lineup_away'], 
+                     pos_h=st.session_state['pos_h'], pos_a=st.session_state['pos_a'])
 
-
-
-
-
+#pretend from show any error before selecting the teams
+except:
+    st.write(' ')
